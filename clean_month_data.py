@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl import Workbook
+import random
 
 # ---------------------------------------------------------------------------
 # R&D roster — scheduled start times (24-hour HH:MM:SS)
@@ -35,47 +36,80 @@ SCHEDULED_START_TIMES: dict[str, str] = {
     "Bo Tian": "07:00:00",
     "Brian He": "08:00:00",
     "Di Yao": "09:00:00",
-    "Jason Guo": "09:00:00",
-    "Jeffry Irace": "07:00:00",
-    "Jolie Yang": "09:00:00",
-    "Junjie Chen": "08:00:00",
-    "Junjie Wu": "09:00:00",
-    "Li Yuan": "08:00:00",
-    "Mingqing Xu": "08:00:00",
-    "Nur Ugurlu": "08:00:00",
-    "Qiaozheng Liu": "08:00:00",
-    "Qiqi Liang": "09:00:00",
-    "Reyhan Barindik": "08:00:00",
-    "Ryan Gumbayan": "07:00:00",
-    "Terry Liu": "09:00:00",
-    "Tianyi Wang": "08:00:00",
-    "Tom Tang": "09:00:00",
-    "Xuefei Meng": "08:00:00",
-    "Yanina Yang": "09:00:00",
-}
+    # Normalize name column to `Name` and randomize the order of the other columns
+    daily_detail = daily_detail.rename(columns={"User": "Name"})
+    averages = averages.rename(columns={"Employee": "Name"})
+    missing_days = missing_days.rename(columns={"Employee": "Name"})
 
+    def _reorder_cols(df: pd.DataFrame) -> list[str]:
+        cols = list(df.columns)
+        if "Name" not in cols:
+            return cols
+        other = [c for c in cols if c != "Name"]
+        random.shuffle(other)
+        return ["Name"] + other
 
-def _to_time(value) -> time:
-    """Convert Excel/time strings/datetimes into a datetime.time object."""
-    if isinstance(value, time):
-        return value
-    if isinstance(value, datetime):
-        return value.time()
-    return pd.to_datetime(str(value)).time()
+    detail_cols = _reorder_cols(daily_detail)
+    averages_cols = _reorder_cols(averages)
+    missing_cols = _reorder_cols(missing_days)
 
+    # Daily Detail sheet
+    detail_sheet = workbook.create_sheet("Daily Detail")
+    detail_sheet.append(detail_cols)
+    for _, row in daily_detail.iterrows():
+        values = []
+        for col in detail_cols:
+            v = row.get(col)
+            if pd.isna(v):
+                values.append(None)
+            elif col in ("Date", "Time", "Missing Workday") or isinstance(
+                v, (pd.Timestamp, datetime, time)
+            ):
+                values.append(_as_excel_datetime(v))
+            elif col == "MinutesLate":
+                values.append(int(v))
+            else:
+                values.append(v)
+        detail_sheet.append(values)
 
-def _is_junk_header_row(row_values: list) -> bool:
-    """True when row 1 is a placeholder like Column1, Column2, Column3."""
-    cells = [
-        str(value).strip().lower().replace(" ", "")
-        for value in row_values
-        if pd.notna(value)
-    ]
-    if not cells:
-        return False
-    return all(cell.startswith("column") for cell in cells[:3])
+    detail_last_row = len(daily_detail) + 1
 
+    # Averages sheet
+    averages_sheet = workbook.create_sheet("Averages")
+    averages_sheet.append(averages_cols)
+    for row_idx, (_, row) in enumerate(averages.iterrows(), start=2):
+        values = []
+        for col in averages_cols:
+            if col == "Average Minutes Late":
+                values.append(_average_minutes_late_formula(detail_last_row, row_idx))
+                continue
+            v = row.get(col)
+            if pd.isna(v):
+                values.append(None)
+            elif col in ("Date", "Time", "Missing Workday") or isinstance(
+                v, (pd.Timestamp, datetime, time)
+            ):
+                values.append(_as_excel_datetime(v))
+            else:
+                values.append(v)
+        averages_sheet.append(values)
 
+    # Missing Days sheet
+    missing_sheet = workbook.create_sheet("Missing Days")
+    missing_sheet.append(missing_cols)
+    for _, row in missing_days.iterrows():
+        values = []
+        for col in missing_cols:
+            v = row.get(col)
+            if pd.isna(v):
+                values.append(None)
+            elif col in ("Date", "Time", "Missing Workday") or isinstance(
+                v, (pd.Timestamp, datetime, time)
+            ):
+                values.append(_as_excel_datetime(v))
+            else:
+                values.append(v)
+        missing_sheet.append(values)
 def read_badge_logs(paths: list[Path]) -> pd.DataFrame:
     """
     Read one or more raw badge exports and return combined scan rows.
